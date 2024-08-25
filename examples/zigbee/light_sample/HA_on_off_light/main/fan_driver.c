@@ -37,18 +37,34 @@
 
 #include "esp_log.h"
 #include "led_strip.h"
-#include "light_driver.h"
+#include "fan_driver.h"
+
+#include <zcl/esp_zigbee_zcl_fan_control.h>
 
 static led_strip_handle_t s_led_strip;
 static uint8_t s_red = 255, s_green = 255, s_blue = 255;
 
-void light_driver_set_power(bool power)
+void fan_driver_set_state(esp_zb_zcl_fan_control_fan_mode_t state)
 {
-    ESP_ERROR_CHECK(led_strip_set_pixel(s_led_strip, 0, s_red * power, s_green * power, s_blue * power));
+    switch(state) {
+        case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_OFF:
+            ESP_ERROR_CHECK(led_strip_set_pixel(s_led_strip, 0, 0 , 0, 0));
+            break;
+        case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_LOW:
+            ESP_ERROR_CHECK(led_strip_set_pixel(s_led_strip, 0, s_red , 0, 0));
+            break;
+        case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_MEDIUM:
+            ESP_ERROR_CHECK(led_strip_set_pixel(s_led_strip, 0, 0 , s_green, 0));
+            break;
+        case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_HIGH:
+            ESP_ERROR_CHECK(led_strip_set_pixel(s_led_strip, 0, 0 , 0, s_blue));
+            break;
+        default: break;
+    }
     ESP_ERROR_CHECK(led_strip_refresh(s_led_strip));
 }
 
-void light_driver_init(bool power)
+void fan_driver_init(esp_zb_zcl_fan_control_fan_mode_t state)
 {
     led_strip_config_t led_strip_conf = {
         .max_leds = CONFIG_EXAMPLE_STRIP_LED_NUMBER,
@@ -58,5 +74,5 @@ void light_driver_init(bool power)
         .resolution_hz = 10 * 1000 * 1000, // 10MHz
     };
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&led_strip_conf, &rmt_conf, &s_led_strip));
-    light_driver_set_power(power);
+    fan_driver_set_state(state);
 }

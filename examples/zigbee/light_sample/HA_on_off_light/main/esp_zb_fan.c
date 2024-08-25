@@ -18,7 +18,9 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "ha/esp_zigbee_ha_standard.h"
-#include "esp_zb_light.h"
+#include "esp_zb_fan.h"
+
+#include <fan_driver.h>
 
 #if !defined ZB_ED_ROLE
 #error Define ZB_ED_ROLE in idf.py menuconfig to compile light (End Device) source code.
@@ -76,23 +78,23 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     }
 }
 
+esp_zb_zcl_fan_control_fan_mode_t fan_state = ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_OFF;
+
 static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t *message)
 {
+    ESP_LOGI(TAG, "%d", message->attribute.id);
     esp_err_t ret = ESP_OK;
-    bool light_state = 0;
-
     ESP_RETURN_ON_FALSE(message, ESP_FAIL, TAG, "Empty message");
     ESP_RETURN_ON_FALSE(message->info.status == ESP_ZB_ZCL_STATUS_SUCCESS, ESP_ERR_INVALID_ARG, TAG, "Received message: error status(%d)",
                         message->info.status);
-    ESP_LOGI(TAG, "Received message: endpoint(%d), cluster(0x%x), attribute(0x%x), data size(%d)", message->info.dst_endpoint, message->info.cluster,
-             message->attribute.id, message->attribute.data.size);
-    if (message->info.dst_endpoint == HA_ESP_LIGHT_ENDPOINT) {
-        if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
-            if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID && message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL) {
-                light_state = message->attribute.data.value ? *(bool *)message->attribute.data.value : light_state;
-                ESP_LOGI(TAG, "Light sets to %s", light_state ? "On" : "Off");
-                light_driver_set_power(light_state);
-            }
+    ESP_LOGI(TAG, "Received message: endpoint(%d), cluster(0x%x), attribute(0x%x), data size(%d), data type (0x%x)", message->info.dst_endpoint, message->info.cluster,
+             message->attribute.id, message->attribute.data.size, message->attribute.data.type);
+    if (message->info.dst_endpoint == HA_ESP_FAN_ENDPOINT) {
+        if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL) {
+                esp_zb_zcl_fan_control_fan_mode_t val = message->attribute.data.value ? *(esp_zb_zcl_fan_control_fan_mode_t *)message->attribute.data.value : fan_state;
+                fan_state = val;
+                ESP_LOGI(TAG, "Fan state sets to %d", fan_state);
+                fan_driver_set_state(fan_state);
         }
     }
     return ret;
@@ -112,14 +114,48 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
     return ret;
 }
 
+char modelid[] = {11, 'E', 'S', 'P', '3', '2', 'C', '6', '.', 'F', 'a', 'n'};
+char manufname[] = {9, 'S', 'n', 'o', 'w', 'y', 'L', 'y', 'n', 'n'};
+int powersource = 0x1; // 0x1 = Mains
+
 static void esp_zb_task(void *pvParameters)
 {
     /* initialize Zigbee stack */
     esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZED_CONFIG();
     esp_zb_init(&zb_nwk_cfg);
-    esp_zb_on_off_light_cfg_t light_cfg = ESP_ZB_DEFAULT_ON_OFF_LIGHT_CONFIG();
-    esp_zb_ep_list_t *esp_zb_on_off_light_ep = esp_zb_on_off_light_ep_create(HA_ESP_LIGHT_ENDPOINT, &light_cfg);
-    esp_zb_device_register(esp_zb_on_off_light_ep);
+
+    esp_zb_cluster_list_t *zb_cluster_list = esp_zb_zcl_cluster_list_create();
+
+    // Basic cluster configs
+    esp_zb_attribute_list_t *basic_cluster_attr = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_BASIC);
+    esp_zb_basic_cluster_add_attr(basic_cluster_attr, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, &manufname[0]);
+    esp_zb_basic_cluster_add_attr(basic_cluster_attr, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, &modelid[0]);
+    esp_zb_basic_cluster_add_attr(basic_cluster_attr, ESP_ZB_ZCL_ATTR_BASIC_POWER_SOURCE_ID, &powersource);
+
+    esp_zb_cluster_list_add_basic_cluster(zb_cluster_list, basic_cluster_attr, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+
+    // Fan control configs
+    esp_zb_fan_control_cluster_cfg_t fan_control_cluster_cfg = {
+        .fan_mode = ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_OFF, .fan_mode_sequence = ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_SEQUENCE_LOW_MED_HIGH
+    };
+    esp_zb_zcl_cluster_role_t fan_ctrl_cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE;
+    esp_zb_attribute_list_t *fan_cluster_attr = esp_zb_fan_control_cluster_create(&fan_control_cluster_cfg);
+    esp_zb_attribute_list_t *attr = fan_cluster_attr;
+    while (attr) {
+        if (attr->attribute.id == ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID) {
+            attr->attribute.access = ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING;
+            break;
+        }
+        attr = attr->next;
+    }
+
+
+    esp_zb_cluster_list_add_fan_control_cluster(zb_cluster_list, fan_cluster_attr , fan_ctrl_cluster_role);
+    esp_zb_ep_list_t *fan_ep_list = esp_zb_ep_list_create();
+    esp_zb_ep_list_add_ep(fan_ep_list, zb_cluster_list, HA_ESP_FAN_ENDPOINT, ESP_ZB_AF_HA_PROFILE_ID, ESP_ZB_HA_LEVEL_CONTROLLABLE_OUTPUT_DEVICE_ID);
+
+    esp_zb_device_register(fan_ep_list);
+
     esp_zb_core_action_handler_register(zb_action_handler);
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
     ESP_ERROR_CHECK(esp_zb_start(false));
@@ -134,6 +170,6 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
-    light_driver_init(LIGHT_DEFAULT_OFF);
+    fan_driver_init(ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_OFF);
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
 }

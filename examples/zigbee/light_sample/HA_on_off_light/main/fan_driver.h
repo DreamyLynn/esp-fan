@@ -38,6 +38,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <zcl/esp_zigbee_zcl_fan_control.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -56,14 +57,14 @@ extern "C" {
 *
 * @param  power  The light power to be set
 */
-void light_driver_set_power(bool power);
+void fan_driver_set_state(esp_zb_zcl_fan_control_fan_mode_t state);
 
 /**
 * @brief color light driver init, be invoked where you want to use color light
 *
 * @param power power on/off
 */
-void light_driver_init(bool power);
+void fan_driver_init(esp_zb_zcl_fan_control_fan_mode_t state);
 
 #ifdef __cplusplus
 } // extern "C"
